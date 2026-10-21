@@ -1,17 +1,18 @@
 # =============================================================================
 # Reusable CI Workflow: Node.js Web Apps (React / Vite)
 # =============================================================================
-# Builds a Node.js web app into a Docker image (multi-stage: build + Nginx)
+# Builds a Node.js web app into a Docker image with Buildx support
 # and pushes to Google Artifact Registry.
 #
 # Usage from caller:
 #   jobs:
-#     build:
+#     dockerize:
 #       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/build-node.yml@main
 #       with:
-#         service_name: delivery-web
-#       secrets:
-#         GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+#         image_name: "delivery-web"
+#         dockerfile: "./Dockerfile"
+#         platform: "linux/amd64"
+#       secrets: inherit
 # =============================================================================
 
 name: "CI: Build Node Web App"
@@ -19,25 +20,31 @@ name: "CI: Build Node Web App"
 on:
   workflow_call:
     inputs:
-      service_name:
-        description: "Service/app name for Docker image (e.g. delivery-web)"
-        required: true
+      image_name:
+        description: "Docker image name (e.g. delivery-web)"
+        required: false
         type: string
+        default: ""
+      service_name:
+        description: "Fallback alias for image_name"
+        required: false
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "./Dockerfile"
+      platform:
+        description: "Target CPU architecture platform"
+        required: false
+        type: string
+        default: "linux/amd64"
       node_version:
         description: "Node.js version"
         required: false
         type: string
         default: "22"
-      build_command:
-        description: "Build command to run"
-        required: false
-        type: string
-        default: "npm run build"
-      dockerfile_path:
-        description: "Path to Dockerfile"
-        required: false
-        type: string
-        default: "Dockerfile"
       checkout_repo:
         description: "Repository to checkout"
         required: false
@@ -59,7 +66,7 @@ env:
 
 jobs:
   build-and-push:
-    name: "Build & Push ${{ inputs.service_name }}"
+    name: "Dockerize ${{ inputs.image_name || inputs.service_name }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -67,19 +74,6 @@ jobs:
         with:
           repository: ${{ inputs.checkout_repo || github.repository }}
           ref: ${{ inputs.checkout_ref || github.ref }}
-
-      - name: Set up Node.js ${{ inputs.node_version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ inputs.node_version }}
-          cache: npm
-
-      - name: Install Dependencies & Verify
-        run: |
-          npm ci
-          # Run lint/type-check if available
-          npm run lint --if-present
-          npm run type-check --if-present
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -93,18 +87,21 @@ jobs:
         run: |
           gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
 
-      - name: Build & Push Docker Image
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          IMAGE_URI="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ inputs.service_name }}"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-          docker build \
-            -t "${IMAGE_URI}:${IMAGE_TAG}" \
-            -t "${IMAGE_URI}:latest" \
-            -f "${{ inputs.dockerfile_path }}" .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-          docker push "${IMAGE_URI}:${IMAGE_TAG}"
-          docker push "${IMAGE_URI}:latest"
-
-          echo "✅ Pushed ${IMAGE_URI}:${IMAGE_TAG}"
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platform }}
+          push: true
+          tags: |
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ inputs.image_name || inputs.service_name }}:${{ github.sha }}
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ inputs.image_name || inputs.service_name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
