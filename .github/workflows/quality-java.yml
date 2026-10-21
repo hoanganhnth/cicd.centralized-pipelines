@@ -1,0 +1,99 @@
+# =============================================================================
+# Reusable CI Workflow: Java Quality Gate (Lint, Test, Security Scan)
+# =============================================================================
+# Runs quality checks without building Docker images.
+# Used for Pull Request validation and pre-merge checks.
+#
+# Usage from caller:
+#   jobs:
+#     quality:
+#       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/quality-java.yml@main
+#       with:
+#         run_secret_scan: true
+# =============================================================================
+
+name: "CI: Java Quality Gate"
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        description: "JDK version"
+        required: false
+        type: string
+        default: "17"
+      run_secret_scan:
+        description: "Run secret scanning"
+        required: false
+        type: boolean
+        default: true
+      run_contract_check:
+        description: "Run API contract verification"
+        required: false
+        type: boolean
+        default: true
+      checkout_repo:
+        description: "Repository to checkout"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: "Git ref to checkout"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  quality-gate:
+    name: "Lint, Test & Quality Gates"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout_repo || github.repository }}
+          ref: ${{ inputs.checkout_ref || github.ref }}
+
+      - name: Set up JDK ${{ inputs.java_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: maven
+
+      - name: Set up Node.js (for Contract Validation)
+        if: inputs.run_contract_check
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Secret Scan
+        if: inputs.run_secret_scan
+        run: bash scripts/verify-secrets.sh
+
+      - name: Verify API & HTTP Boundary Contracts
+        if: inputs.run_contract_check
+        run: |
+          ./scripts/verify-http-api-inventory.sh
+          node docs/platform/system/api/generate-http-contract.mjs --check
+
+      - name: Install Platform Dependencies
+        run: |
+          mvn -B -DskipTests install \
+            -pl platform/delivery-platform-bom,platform/delivery-build-parent,platform/kafka-starter,observability-starter,runtime-platform-starter,platform/platform-http-blocking,identity-contracts,search-contracts,routing-contracts,delivery-contracts,order-contracts,clients/identity-client,clients/routing-client,auth-resource-server-starter
+
+      - name: Compile All Modules
+        run: mvn -B test-compile
+
+      - name: Run Unit & Integration Tests
+        run: mvn -B test -Dtest="*Test" -DfailIfNoTests=false
+
+      - name: Upload Test & Coverage Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-and-coverage-reports
+          path: |
+            **/target/surefire-reports/**
+            **/target/site/jacoco/**
+          if-no-files-found: ignore

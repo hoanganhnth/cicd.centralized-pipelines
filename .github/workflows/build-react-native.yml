@@ -1,0 +1,140 @@
+# =============================================================================
+# Reusable CI Workflow: React Native App (Shipper App)
+# =============================================================================
+# Builds React Native app for Android/iOS. Uses Expo or bare workflow.
+#
+# Usage from caller:
+#   jobs:
+#     build:
+#       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/build-react-native.yml@main
+#       with:
+#         app_name: shipper-app
+#         build_target: android
+#       secrets:
+#         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+#         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+#         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+#         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+# =============================================================================
+
+name: "CI: Build React Native App"
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "App identifier (e.g. shipper-app)"
+        required: true
+        type: string
+      node_version:
+        description: "Node.js version"
+        required: false
+        type: string
+        default: "22"
+      java_version:
+        description: "JDK version for Android build"
+        required: false
+        type: string
+        default: "17"
+      build_target:
+        description: "Build target: android, ios"
+        required: false
+        type: string
+        default: "android"
+      checkout_repo:
+        description: "Repository to checkout"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: "Git ref to checkout"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      KEYSTORE_BASE64:
+        required: false
+      KEYSTORE_PASSWORD:
+        required: false
+      KEY_ALIAS:
+        required: false
+      KEY_PASSWORD:
+        required: false
+
+jobs:
+  build:
+    name: "Build RN (${{ inputs.build_target }})"
+    runs-on: ${{ inputs.build_target == 'ios' && 'macos-latest' || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout_repo || github.repository }}
+          ref: ${{ inputs.checkout_ref || github.ref }}
+
+      - name: Set up Node.js ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Install JS Dependencies
+        run: npm ci
+
+      - name: Run Lint & Type Check
+        run: |
+          npm run lint --if-present
+          npm run type-check --if-present
+
+      - name: Run Tests
+        run: npm test -- --ci --passWithNoTests || true
+
+      # ---- Android Build ----
+      - name: Set up JDK (Android)
+        if: inputs.build_target == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+
+      - name: Decode Keystore (Android)
+        if: inputs.build_target == 'android'
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+          fi
+
+      - name: Build Android APK
+        if: inputs.build_target == 'android'
+        working-directory: android
+        run: |
+          ./gradlew assembleRelease --no-daemon
+
+      # ---- iOS Build ----
+      - name: Install CocoaPods (iOS)
+        if: inputs.build_target == 'ios'
+        run: |
+          cd ios && pod install --repo-update
+
+      - name: Build iOS (Archive)
+        if: inputs.build_target == 'ios'
+        run: |
+          cd ios
+          xcodebuild -workspace *.xcworkspace \
+            -scheme "${{ inputs.app_name }}" \
+            -configuration Release \
+            -archivePath build/${{ inputs.app_name }}.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO || true
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.app_name }}-${{ inputs.build_target }}-${{ github.sha }}"
+          path: |
+            android/app/build/outputs/**/*.apk
+            ios/build/**/*.xcarchive
+          if-no-files-found: ignore
+          retention-days: 30

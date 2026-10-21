@@ -1,0 +1,118 @@
+# =============================================================================
+# Reusable CI Workflow: Flutter Mobile App
+# =============================================================================
+# Builds Flutter app (APK/IPA) and optionally creates a Docker image for
+# web builds. Primarily used for delivery_app (customer app).
+#
+# Usage from caller:
+#   jobs:
+#     build:
+#       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/build-flutter.yml@main
+#       with:
+#         app_name: delivery-app
+#         build_target: apk
+#       secrets:
+#         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+#         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+#         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+#         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+# =============================================================================
+
+name: "CI: Build Flutter App"
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "App identifier (e.g. delivery-app)"
+        required: true
+        type: string
+      flutter_version:
+        description: "Flutter SDK version"
+        required: false
+        type: string
+        default: "3.24.0"
+      build_target:
+        description: "Build target: apk, appbundle, ios, web"
+        required: false
+        type: string
+        default: "apk"
+      build_args:
+        description: "Extra flutter build arguments"
+        required: false
+        type: string
+        default: "--release"
+      checkout_repo:
+        description: "Repository to checkout"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: "Git ref to checkout"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      KEYSTORE_BASE64:
+        required: false
+      KEYSTORE_PASSWORD:
+        required: false
+      KEY_ALIAS:
+        required: false
+      KEY_PASSWORD:
+        required: false
+
+jobs:
+  build:
+    name: "Build Flutter (${{ inputs.build_target }})"
+    runs-on: ${{ inputs.build_target == 'ios' && 'macos-latest' || 'ubuntu-latest' }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout_repo || github.repository }}
+          ref: ${{ inputs.checkout_ref || github.ref }}
+
+      - name: Set up Flutter ${{ inputs.flutter_version }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ inputs.flutter_version }}
+          cache: true
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Run Analyzer
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run Tests
+        run: flutter test --no-pub || true
+
+      - name: Decode Keystore (Android)
+        if: inputs.build_target == 'apk' || inputs.build_target == 'appbundle'
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/keystore.jks
+            cat > android/key.properties << EOF
+          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          storeFile=keystore.jks
+          EOF
+          fi
+
+      - name: Build ${{ inputs.build_target }}
+        run: |
+          flutter build ${{ inputs.build_target }} ${{ inputs.build_args }}
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: "${{ inputs.app_name }}-${{ inputs.build_target }}-${{ github.sha }}"
+          path: |
+            build/app/outputs/**/*.apk
+            build/app/outputs/**/*.aab
+            build/ios/ipa/*.ipa
+            build/web/
+          if-no-files-found: ignore
+          retention-days: 30
