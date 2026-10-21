@@ -1,7 +1,7 @@
 # =============================================================================
 # Reusable CI Workflow: React Native App (Shipper App)
 # =============================================================================
-# Builds React Native app for Android/iOS. Uses Expo or bare workflow.
+# Builds React Native app for Android/iOS.
 #
 # Usage from caller:
 #   jobs:
@@ -9,12 +9,8 @@
 #       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/build-react-native.yml@main
 #       with:
 #         app_name: shipper-app
-#         build_target: android
-#       secrets:
-#         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-#         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-#         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-#         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+#         node_version: "20"
+#         build_mode: "debug"
 # =============================================================================
 
 name: "CI: Build React Native App"
@@ -30,7 +26,7 @@ on:
         description: "Node.js version"
         required: false
         type: string
-        default: "22"
+        default: "20"
       java_version:
         description: "JDK version for Android build"
         required: false
@@ -41,6 +37,11 @@ on:
         required: false
         type: string
         default: "android"
+      build_mode:
+        description: "Build mode: debug or release"
+        required: false
+        type: string
+        default: "debug"
       checkout_repo:
         description: "Repository to checkout"
         required: false
@@ -78,16 +79,31 @@ jobs:
           node-version: ${{ inputs.node_version }}
           cache: npm
 
+      - name: Prepare environment file
+        run: |
+          if [ -f .env.example ] && [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+
       - name: Install JS Dependencies
         run: npm ci
 
-      - name: Run Lint & Type Check
+      - name: Run Verification / Lint / Typecheck
         run: |
-          npm run lint --if-present
-          npm run type-check --if-present
+          if npm run | grep -q "verify"; then
+            npm run verify
+          else
+            npm run lint --if-present
+            npm run type-check --if-present
+          fi
 
-      - name: Run Tests
-        run: npm test -- --ci --passWithNoTests || true
+      - name: Run Tests & Coverage
+        run: |
+          if npm run | grep -q "test:coverage"; then
+            npm run test:coverage
+          else
+            npm test -- --ci --passWithNoTests || true
+          fi
 
       # ---- Android Build ----
       - name: Set up JDK (Android)
@@ -97,18 +113,21 @@ jobs:
           distribution: temurin
           java-version: ${{ inputs.java_version }}
 
-      - name: Decode Keystore (Android)
-        if: inputs.build_target == 'android'
+      - name: Decode Keystore (Android Release)
+        if: inputs.build_target == 'android' && inputs.build_mode == 'release'
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
           fi
 
-      - name: Build Android APK
+      - name: Build Android Package
         if: inputs.build_target == 'android'
-        working-directory: android
         run: |
-          ./gradlew assembleRelease --no-daemon
+          if [ "${{ inputs.build_mode }}" = "debug" ]; then
+            npx react-native build-android --mode=debug
+          else
+            cd android && ./gradlew assembleRelease --no-daemon
+          fi
 
       # ---- iOS Build ----
       - name: Install CocoaPods (iOS)
@@ -130,11 +149,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO || true
 
       - name: Upload Build Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ inputs.app_name }}-${{ inputs.build_target }}-${{ github.sha }}"
+          name: "${{ inputs.app_name }}-${{ inputs.build_target }}-${{ inputs.build_mode }}-${{ github.sha }}"
           path: |
-            android/app/build/outputs/**/*.apk
+            coverage/**
+            android/app/build/outputs/apk/**/*.apk
             ios/build/**/*.xcarchive
           if-no-files-found: ignore
           retention-days: 30

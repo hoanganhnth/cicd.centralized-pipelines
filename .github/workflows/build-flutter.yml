@@ -1,8 +1,8 @@
 # =============================================================================
 # Reusable CI Workflow: Flutter Mobile App
 # =============================================================================
-# Builds Flutter app (APK/IPA) and optionally creates a Docker image for
-# web builds. Primarily used for delivery_app (customer app).
+# Builds Flutter app (APK/IPA) and optionally creates build artifacts.
+# Primarily used for delivery_app (customer app).
 #
 # Usage from caller:
 #   jobs:
@@ -10,12 +10,9 @@
 #       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/build-flutter.yml@main
 #       with:
 #         app_name: delivery-app
+#         flutter_version: "3.32.8"
 #         build_target: apk
-#       secrets:
-#         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-#         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-#         KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-#         KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+#         build_args: "--debug --dart-define=API_BASE_URL=http://10.0.2.2:8079"
 # =============================================================================
 
 name: "CI: Build Flutter App"
@@ -31,7 +28,7 @@ on:
         description: "Flutter SDK version"
         required: false
         type: string
-        default: "3.24.0"
+        default: "3.32.8"
       build_target:
         description: "Build target: apk, appbundle, ios, web"
         required: false
@@ -41,7 +38,12 @@ on:
         description: "Extra flutter build arguments"
         required: false
         type: string
-        default: "--release"
+        default: "--debug"
+      run_coverage:
+        description: "Whether to run tests with coverage"
+        required: false
+        type: boolean
+        default: true
       checkout_repo:
         description: "Repository to checkout"
         required: false
@@ -79,16 +81,27 @@ jobs:
           flutter-version: ${{ inputs.flutter_version }}
           cache: true
 
+      - name: Prepare environment file
+        run: |
+          if [ -f .env.example ] && [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Run Analyzer
-        run: flutter analyze --no-fatal-infos
+        run: flutter analyze
 
       - name: Run Tests
-        run: flutter test --no-pub || true
+        run: |
+          if [ "${{ inputs.run_coverage }}" = "true" ]; then
+            flutter test --coverage || true
+          else
+            flutter test || true
+          fi
 
-      - name: Decode Keystore (Android)
+      - name: Decode Keystore (Android Release)
         if: inputs.build_target == 'apk' || inputs.build_target == 'appbundle'
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
@@ -110,6 +123,7 @@ jobs:
         with:
           name: "${{ inputs.app_name }}-${{ inputs.build_target }}-${{ github.sha }}"
           path: |
+            coverage/**
             build/app/outputs/**/*.apk
             build/app/outputs/**/*.aab
             build/ios/ipa/*.ipa
