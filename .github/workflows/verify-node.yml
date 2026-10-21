@@ -1,0 +1,85 @@
+# =============================================================================
+# Reusable CI Workflow: Node.js Web App Test & Verification (Stage: test)
+# =============================================================================
+# Runs lint, unit tests, coverage, and E2E verification.
+#
+# Usage from caller:
+#   jobs:
+#     test:
+#       uses: hoanganhnth/cicd.centralized-pipelines/.github/workflows/verify-node.yml@main
+# =============================================================================
+
+name: "CI: Verify Node Web App"
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version"
+        required: false
+        type: string
+        default: "22"
+      checkout_repo:
+        description: "Repository to checkout"
+        required: false
+        type: string
+        default: ""
+      checkout_ref:
+        description: "Git ref to checkout"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  verify:
+    name: "Lint, Test & Coverage"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.checkout_repo || github.repository }}
+          ref: ${{ inputs.checkout_ref || github.ref }}
+
+      - name: Set up Node.js ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Lint, Test & Contract Check
+        run: |
+          if npm run | grep -q "verify:ci"; then
+            npm run verify:ci
+          else
+            npm run lint --if-present
+            npm test --if-present
+          fi
+
+      - name: Unit & Coverage Report
+        run: |
+          if npm run | grep -q "test:coverage"; then
+            npm run test:coverage
+          fi
+
+      - name: Browser E2E Tests (Playwright)
+        run: |
+          if npm run | grep -q "test:e2e:coverage"; then
+            npx playwright install --with-deps chromium
+            npm run test:e2e:coverage
+          fi
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-reports
+          path: |
+            coverage/**
+            dist/**
+            test-results/**
+            playwright-report/**
+          if-no-files-found: ignore
